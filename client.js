@@ -51,6 +51,7 @@ ${this.bodyText}`
             });
         })
     }
+
 }
 
 class Response {
@@ -136,10 +137,12 @@ class ResponseParser {
     get isFinished() {
         return this.bodyParser && this.bodyParser.isFinished;
     }
+
 }
 
 // body的状态机
 class TrunkedBodyParser {
+
     constructor() {
         this.body = "";
         this.WAITING_LENGTH = 0;
@@ -152,6 +155,7 @@ class TrunkedBodyParser {
         this.isFinished = false;
         this.current = this.WAITING_LENGTH;
     }
+
     receiveChar(char) {
         if (this.current === this.WAITING_LENGTH) {
             if (char === '\r') {
@@ -183,8 +187,8 @@ class TrunkedBodyParser {
                 this.current = this.WAITING_LENGTH;
             }
         }
-
     }
+
 }
 
 // 调用

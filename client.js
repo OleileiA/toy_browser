@@ -1,6 +1,7 @@
 const net = require("net");
 
 class Request {
+
     constructor(options) {
         this.method = options.method || "GET";
         this.host = options.host;
@@ -14,7 +15,8 @@ class Request {
         // 请求体
         if (this.headers["Content-Type"] === "application/json") {
             this.bodyText = JSON.stringify(this.body);
-        } else if (this.headers["Content-Type"] === "application/x-www-form-urlencoded") {
+        }
+        else if (this.headers["Content-Type"] === "application/x-www-form-urlencoded") {
             this.bodyText = Object.keys(this.body).map(key => `${key}=${encodeURIComponent(this.body[key])}`).join("&");
         }
         this.headers["Content-Length"] = this.bodyText.length;
@@ -38,6 +40,8 @@ ${this.bodyText}`
                 }, () => {
                     connection.write(this.toString());
                 })
+
+            // data事件接收到一段流，不一定是完整的response
             connection.on('data', (data) => {
                 resolve(data);
                 connection.end();
@@ -53,6 +57,137 @@ class Response {
 
 }
 
+// 状态机，解析http response
+// http response 三段：status-line / headers / body
+class ResponseParser {
+
+    constructor() {
+        this.WAITING_STATUS_LINE = 0;
+        this.WAITING_STATUS_LINE_END = 1;
+        this.WAITING_HEADER_NAME = 2;
+        this.WAITING_HEADER_SPACE = 3
+        this.WAITING_HEADER_VALUE = 4;
+        this.WAITING_HEADER_LINE_END = 5;
+        this.WAITING_HEADER_BLOCK_END = 6;
+        this.WAITING_BODY = 7;
+        this.current = this.WAITING_STATUS_LINE; // 当前状态
+        this.statusLine = "";
+        this.headers ={};
+        this.headerName = "";
+        this.headerValue = "";
+        this.bodyParser = null;
+    }
+
+    receive(string) {
+        string.split("").map(char => this.receiveChar(char));
+    }
+
+    // 状态机开始判断，组装出我们解析后的数据
+    receiveChar(char) {
+        if (this.current === this.WAITING_STATUS_LINE) {
+            if (char === '\r')
+                this.current = this.WAITING_STATUS_LINE_END;
+            else if (char === '\n')
+                this.current = this.WAITING_HEADER_NAME;
+            else
+                this.statusLine += char;
+        }
+        else if (this.current === this.WAITING_STATUS_LINE_END) {
+            if (char === '\n') this.current = this.WAITING_HEADER_NAME;
+        }
+        else if (this.current === this.WAITING_HEADER_NAME) {
+            if (char === ':') {
+                this.current = this.WAITING_HEADER_SPACE;
+            }
+            else if (char === '\r') {//本来应该是头键字段，结果是\r说明，头部字段结束
+                this.current = this.WAITING_HEADER_BLOCK_END;
+                if (this.headers['Transfer-Encoding'] === 'chunked') this.bodyParser = new TrunkedBodyParser();
+            }
+            else {
+                this.headerName += char;
+            }
+        }
+        else if (this.current === this.WAITING_HEADER_SPACE) {
+            if (char === ' ') {
+                this.current = this.WAITING_HEADER_VALUE;
+            }
+        }
+        else if (this.current === this.WAITING_HEADER_VALUE) {
+            if (char === '\r') {
+                this.current = this.WAITING_HEADER_LINE_END;
+                this.headers[this.headerName] = this.headerValue;
+                this.headerName = "";
+                this.headerValue = "";
+            } else {
+                this.headerValue += char;
+            }
+        }
+        else if (this.current === this.WAITING_HEADER_LINE_END) {
+            if (char === '\n') this.current = this.WAITING_HEADER_NAME;
+        }
+        else if (this.current === this.WAITING_HEADER_BLOCK_END) {
+            if (char === '\n') this.current = this.WAITING_BODY;
+        }
+        else if (this.current === this.WAITING_BODY) {
+            this.bodyParser.receiveChar(char);
+        }
+    }
+
+    get isFinished() {
+        return this.bodyParser && this.bodyParser.isFinished;
+    }
+}
+
+// body的状态机
+class TrunkedBodyParser {
+    constructor() {
+        this.body = "";
+        this.WAITING_LENGTH = 0;
+        this.WAITING_LENGTH_LINE_END = 1;
+        this.READING_TRUNK = 2;
+        this.WAITING_NEW_LINE = 3;
+        this.WAITING_NEW_LINE_END = 4;
+        this.length = 0;
+        this.content = [];
+        this.isFinished = false;
+        this.current = this.WAITING_LENGTH;
+    }
+    receiveChar(char) {
+        if (this.current === this.WAITING_LENGTH) {
+            if (char === '\r') {
+                if (this.length === 0) {
+                    console.log("content", this.content);
+                    this.isFinished = true;
+                }
+                this.current = this.WAITING_LENGTH_LINE_END;
+            } else {
+                this.length *= 10;
+                this.length += char.charCodeAt(0) - '0'.charCodeAt(0);
+            }
+        }
+        else if (this.current === this.WAITING_LENGTH_LINE_END) {
+            if (char === '\n') {
+                this.current = this.READING_TRUNK;
+            }
+        }
+        else if (this.current === this.READING_TRUNK) {
+            this.content.push(char);
+            this.length--;
+            if (this.length === 0) this.current = this.WAITING_NEW_LINE;
+        }
+        else if (this.current === this.WAITING_NEW_LINE) {
+            if (char === '\r') this.current = this.WAITING_NEW_LINE_END;
+        }
+        else if (this.current === this.WAITING_NEW_LINE_END) {
+            if (char === '\n') {
+                this.current = this.WAITING_LENGTH;
+            }
+        }
+
+    }
+}
+
+// 调用
 void (async function () {
     const request = new Request({
         method: "POST",
@@ -66,35 +201,10 @@ void (async function () {
             name: 'Winter'
         }
     })
-    let res = await request.send()
-    console.log(res.toString());
+    let res = await request.send();
+    const responseParser = new ResponseParser();
+    responseParser.receive(res.toString());
+    console.log(responseParser.statusLine);
+    console.log(responseParser.headers);
+    console.log(responseParser.bodyParser.body);
 })();
-
-
-// const client = net.createConnection({
-//     host: '127.0.0.1',
-//     port: 8088
-// }, () => {
-//     // client.write(`POST / HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 11\r\n\r\nname=winter`);
-//     const httpRes = new Request({
-//         method: "POST",
-//         host: '127.0.0.1',
-//         port: 8088,
-//         path: '/',
-//         headers: {
-//           ["X-Foo"]: "costumed"
-//         },
-//         body: {
-//             name: 'Winter'
-//         }
-//     })
-//     console.log(httpRes.toString());
-//     client.write(httpRes.toString());
-// });
-// client.on('data', (data) => {
-//     console.log(data.toString());
-//     client.end();
-// });
-// client.on('end', () => {
-//     console.log('disconnected from server');
-// });

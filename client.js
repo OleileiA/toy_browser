@@ -31,6 +31,7 @@ ${this.bodyText}`
 
     send(connection) {
         return new Promise((resolve, reject) => {
+            const responseParser = new ResponseParser();
             if (connection)
                 connection.write(this.toString());
             else
@@ -43,7 +44,10 @@ ${this.bodyText}`
 
             // data事件接收到一段流，不一定是完整的response
             connection.on('data', (data) => {
-                resolve(data);
+                responseParser.receive(data.toString());
+                if (responseParser.isFinished) {
+                    resolve(responseParser.response)
+                }
                 connection.end();
             });
             connection.on('err', (err) => {
@@ -138,6 +142,15 @@ class ResponseParser {
         return this.bodyParser && this.bodyParser.isFinished;
     }
 
+    get response() {
+        this.statusLine.match(/HTTP\/1.1 ([0-9]+) ([\s\S]+)/)
+        return {
+            statusCode: RegExp.$1,
+            statusText: RegExp.$2,
+            headers: this.headers,
+            body: this.bodyParser.content.join(''),
+        }
+    }
 }
 
 // body的状态机
@@ -160,7 +173,6 @@ class TrunkedBodyParser {
         if (this.current === this.WAITING_LENGTH) {
             if (char === '\r') {
                 if (this.length === 0) {
-                    console.log("content", this.content);
                     this.isFinished = true;
                 }
                 this.current = this.WAITING_LENGTH_LINE_END;
@@ -206,9 +218,5 @@ void (async function () {
         }
     })
     let res = await request.send();
-    const responseParser = new ResponseParser();
-    responseParser.receive(res.toString());
-    console.log(responseParser.statusLine);
-    console.log(responseParser.headers);
-    console.log(responseParser.bodyParser.body);
+    console.log(res);
 })();
